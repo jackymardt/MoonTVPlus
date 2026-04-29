@@ -166,7 +166,8 @@ export default function BookDetailPage() {
         <div className='space-y-4'>
           <div>
             <h1 className='text-2xl font-semibold'>{detail.title}</h1>
-            <div className='mt-2 text-sm text-gray-500 dark:text-gray-400'>{detail.author || detail.sourceName}</div>
+            <div className='mt-2 text-sm text-gray-500 dark:text-gray-400'>{detail.author || '未知作者'}</div>
+            <div className='mt-1 text-xs text-gray-400 dark:text-gray-500'>{detail.sourceName}</div>
           </div>
           {detail.summary ? <div className='text-sm leading-7 text-gray-700 dark:text-gray-300'>{detail.summary}</div> : null}
           <div className='flex flex-wrap gap-2'>
@@ -190,7 +191,22 @@ export default function BookDetailPage() {
                   <div>{item.title || item.type}</div>
                   <div className='text-xs text-gray-500'>{item.rel}</div>
                 </div>
-                <button disabled={!format || fileBusy !== ''} onClick={async () => { if (!format) return; try { setFileBusy('open'); await openBookFile(detail.sourceId, detail.id, format, false, item.href); } catch (err) { setError((err as Error).message || '打开文件失败'); } finally { setFileBusy(''); } }} className='text-sky-600 disabled:text-gray-400'>打开</button>
+                <button disabled={!format || fileBusy !== ''} onClick={async () => {
+                  if (!format) return;
+                  if (format === 'epub') {
+                    cacheBookDetail(detail);
+                    window.location.href = buildBookReadPath(detail.sourceId, detail.id);
+                    return;
+                  }
+                  try {
+                    setFileBusy('open');
+                    await openBookFile(detail.sourceId, detail.id, format, false, item.href);
+                  } catch (err) {
+                    setError((err as Error).message || '打开文件失败');
+                  } finally {
+                    setFileBusy('');
+                  }
+                }} className='text-sky-600 disabled:text-gray-400'>打开</button>
               </div>
             );
           })}

@@ -271,6 +271,60 @@ async function parseFeed(xml: string, baseUrl: string): Promise<ParsedFeed> {
   };
 }
 
+
+function fillSearchTermsTemplate(template: string, keyword: string) {
+  const encoded = encodeURIComponent(keyword);
+  const replaced = template
+    .replace(/\{searchTerms[^}]*\}/g, encoded)
+    .replace(/\{count[^}]*\}/g, '20')
+    .replace(/\{startIndex[^}]*\}/g, '0')
+    .replace(/\{startPage[^}]*\}/g, '1')
+    .replace(/\{language[^}]*\}/g, '')
+    .replace(/\{inputEncoding[^}]*\}/g, 'UTF-8')
+    .replace(/\{outputEncoding[^}]*\}/g, 'UTF-8')
+    .replace(/\{source[^}]*\}/g, '')
+    .replace(/\{[^}]+\}/g, '');
+
+  try {
+    const url = new URL(replaced);
+    const toDelete: string[] = [];
+    url.searchParams.forEach((value, key) => {
+      if (!value || value === 'undefined' || value === 'null') toDelete.push(key);
+    });
+    toDelete.forEach((key) => url.searchParams.delete(key));
+    return url.toString();
+  } catch {
+    return replaced
+      .replace(/[?&](?:[^=]+)=(&|$)/g, '$1')
+      .replace(/[?&]$/, '');
+  }
+}
+
+async function resolveSearchTargetUrl(source: BookSource, q: string): Promise<string> {
+  if (source.searchTemplate) {
+    return fillSearchTermsTemplate(source.searchTemplate, q);
+  }
+
+  const rootFeed = await getFeed(source);
+  const searchLink = rootFeed.links.find((link) => link.rel === 'search');
+  if (!searchLink?.href) throw new Error('该书源不支持搜索');
+
+  if ((searchLink.type || '').toLowerCase().includes('opensearchdescription+xml')) {
+    const xml = await fetchText(searchLink.href, buildHeaders(source));
+    const parsed = await parseStringPromise(xml, { explicitArray: true, trim: true });
+    const description = parsed.OpenSearchDescription || parsed['os:OpenSearchDescription'] || parsed['OpenSearchDescription'];
+    const urlNodes = asArray(description?.Url || description?.url);
+    const preferred = urlNodes.find((item) => (item?.$?.type || '').toLowerCase().includes('atom+xml')) || urlNodes[0];
+    const template = preferred?.$?.template;
+    if (!template) throw new Error('未找到搜索模板');
+    return fillSearchTermsTemplate(normalizeUrl(searchLink.href, template), q);
+  }
+
+  return searchLink.href.includes('{searchTerms}')
+    ? searchLink.href.replace('{searchTerms}', encodeURIComponent(q))
+    : `${searchLink.href}${searchLink.href.includes('?') ? '&' : '?'}q=${encodeURIComponent(q)}`;
+}
+
 async function getFeed(source: BookSource, href?: string): Promise<ParsedFeed> {
   const target = normalizeUrl(source.url, href || source.url);
   const cacheKey = `${source.id}|${target}`;
@@ -395,30 +449,13 @@ export class OPDSClient {
   }
 
   async searchBooks(q: string, sourceId?: string): Promise<BookSearchResult> {
-    const sources = sourceId ? [await getSourceById(sourceId)] : await this.getSources();
+    const sources = sourceId ? [await getSourceById(sourceId)] : (await resolveOPDSConfig()).sources;
     const results: BookListItem[] = [];
     const failedSources: BookSearchFailure[] = [];
 
     await Promise.all(sources.map(async (source) => {
       try {
-        const capabilities = source.capabilities || await detectCapabilities(source);
-        if (!capabilities.searchSupported) {
-          failedSources.push({ sourceId: source.id, sourceName: source.name, error: '该书源不支持搜索' });
-          return;
-        }
-
-        let targetUrl = '';
-        if (capabilities.searchMode === 'opds') {
-          const rootFeed = await getFeed(source);
-          const searchLink = rootFeed.links.find((link) => link.rel === 'search');
-          if (!searchLink?.href) throw new Error('未找到 search link');
-          targetUrl = searchLink.href.includes('{searchTerms}')
-            ? searchLink.href.replace('{searchTerms}', encodeURIComponent(q))
-            : `${searchLink.href}${searchLink.href.includes('?') ? '&' : '?'}q=${encodeURIComponent(q)}`;
-        } else if (source.searchTemplate) {
-          targetUrl = source.searchTemplate.replace('{searchTerms}', encodeURIComponent(q));
-        }
-
+        const targetUrl = await resolveSearchTargetUrl(source, q);
         if (!targetUrl) throw new Error('未配置可用的搜索地址');
         const feed = await getFeed(source, targetUrl);
         results.push(...feed.entries.map((entry) => mapEntryToItem(source, entry)));
